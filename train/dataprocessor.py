@@ -115,7 +115,7 @@ class dataProcessor:
             
         #def postProcessing(self,
         #                  row_pred):
-        #    
+        #    dummies.idxmax(axis=1) ref: https://stackoverflow.com/questions/26762100/reconstruct-a-categorical-variable-from-dummies-in-pandas
         #    
         #    return self.pred_data
             
