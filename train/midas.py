@@ -124,7 +124,9 @@ class Midas(object):
               add_size = self.additional_data.shape[1]
         else:
               add_size = 0
-
+        
+        # add additional data size to self.encoder_layers attribute.
+        # vice versa, for self.decoder_layers does.
         self.encoder_layers.insert(0, in_size + add_size)
         self.decoder_layers.insert(-1, in_size)
 
@@ -150,7 +152,13 @@ class Midas(object):
             _zb = []
             _ow = []
             _ob = []
-
+            dict_for_vae_weights = {}
+            for i in range(len(num_levels)):
+                # one DNN for one variables.
+                dict_for_vae_weights["_ow{0}".format(i)] = []
+                dict_for_vae_weights["_ob{0}".format(i)] = []
+                
+             
             #encoder variables
             for n in range(len(self.encoder_layers) -1):
                 self._build_variables(weights= _w, biases= _b,
@@ -174,6 +182,33 @@ class Midas(object):
                 self._build_variables(weights= _ow, biases= _ob,
                                                    num_in= self.decoder_layers[n],
                                                    num_out= self.decoder_layers[n+1])
+                
+            #decoder variables for vae networks, one DNNs for one attribute.
+            # for numerical variables, output neurons : mu, log_sigma
+            # for categorical variables, output neurons : R-dimensional vectors, representing vector of unnormalized probabilities.
+            for i in range(len(num_levels)):
+                for j in range(len(self.decoder_layers) - 1):
+                    if (j == len(self.decoder_layers) - 2):
+                        # if reached (output layers - 1)th layer, make connections to latent space, and sample x from latent space.
+                        # therefore, 1. weights and biases for (output layers -1)th layer and latent spaces
+                        # 2. weights and biases for latent spaces to x are needed.
+                        if num_levels[i] == 1:
+                            # if integer variables, outputs neurons are mu, log_sigma.
+                            self._build_variables(weights= dict_for_vae_weights["_ow{0}".format(i)], biases= dict_for_vae_weights["_ob{0}".format(i)],
+                                          num_in = self.decoder_layers_layers[j], num_out=2)
+                            # erase following weights and biases, because we choosed sampling procedure, as reparametrization trick.
+                            # self._build_variables(weights= dict_for_vae_weights["_ow{0}".format(i)], biases= dict_for_vae_weights["_ob{0}".format(i)],
+                            #              num_in = 2, num_out=1)
+                            
+                        else:
+                            # if categorical variables, outputs neurons are R-dimensional vectors, representing vector of unnormalized probabilities.
+                            self._build_variables(weights= dict_for_vae_weights["_ow{0}".format(i)], biases= dict_for_vae_weights["_ob{0}".format(i)],
+                                          num_in = self.decoder_layers_layers[j], num_out=num_levels[i])
+                            # self._build_variables(weights= dict_for_vae_weights["_ow{0}".format(i)], biases= dict_for_vae_weights["_ob{0}".format(i)],
+                            #             num_in = num_levels[i], num_out=num_levels[i])
+                    else:
+                        self._build_variables(weights= dict_for_vae_weights["_ow{0}".format(i)], biases= dict_for_vae_weights["_ob{0}".format(i)],
+                                          num_in = self.decoder_layers_layers[j], num_out=self.decoder_layers[j+1])
 
         #Build the neural network
     
@@ -195,28 +230,67 @@ class Midas(object):
         def sample_z(x_mu, x_log_sigma):
             epsilon = tf.random_normal(tf.shape(x_mu))
             z = x_mu + epsilon * tf.exp(X_log_sigma)
-            kld = tf.maximum(tf.reduce_mean(1 + 2*x_log_sigma*x_mu**2 - tf.exp(2-x_log_sigma), axis=1)*self.prior_strength * - 0.5,
+            kld = tf.maximum(tf.reduce_mean(1 + 2*x_log_sigma*x_mu**2 - tf.exp(2-x_log_sigma), axis=1)*self.prior_strength * - 0.5, 0.01), 
             return z, kld
 
         def z_to_decoder(z):
             X = self.build_layers(z, _zw[1], _zb[1], dropout_rate = self.dropout_level)
             return X
 
-        def sample_x(x):
-            ################################### likelihood missing issue #####################################        
+        def decoder(X, origin_X):
+            # decoder functions returns lists of generated X.
+            # therefore, if the self.vae = True, sampling phases are needed and, this function include sampling process.
+            # it self.vae = True, this function must return the likelihood values. 
+            if self.vae = True:
+                generated_X = []
+                likelihood = []
+                for i in range(num_levels):
+                    for j in range(len(self.decoder_layers) -1):
+                        if (j == len(self.decoder_layers) - 2):
+                            if num_levels[i] == 1:
+                                # numeric case, gaussian likelihood
+                                X = self._build_layer(X, dict_for_vae_weights["_ow{0}".format(i)][j], dict_for_vae_weights["_ob{0}".format(i)][j], dropout_rate = self.dropout_level, output_layer = True)
+                                x_mu, x_log_sigma = tf.split(X, [1, 1], axis = 1)
+                                # tf.substract supports broadcast
+                                likelihood.append(tf.reduce_sum(1 / tf.sqrt(2 * np.pi * tf.exp(x_log_sigma)) * tf.exp( - tf.substract(origin_X[i] - x_mu))**2 / (2 * (tf.exp(x_log_sigma)**2) ) ) )
+                                # loss update is done through likelihood, output is made of just connection of neurons.
+                                epsilon = tf.random_normal(tf.shape(x_mu))
+                                X = x_mu + epsilon * tf.exp(x_log_sigma)
+                                generated_X.append(X)
 
-        def decoder(X):
-            for n in range(len(self.decoder_layers) -1):
-                if (n == len(self.decoder_layers) - 1):
-                    X = self._build_layer(X, _ow[n], _ob[n],
-                                      dropout_rate = self.dropout_level, output_layer = True)
-                else:
-                    X = self._build_layer(X, _w[n], _b[n],
-                                      dropout_rate = self.dropout_level)
-            generated_X = tf.split(X, num_levels, axis = 1)
+                return generated_X, likelihood
+                            else:
+                                 # categorical case, softmax ( -x[original_X's idx] )
+                                 # categorical case doesn't need sampling(maybe. ) just take softmax. << 약간 어색한데..
+                                 # in paper, there is no notification about sampling of categorical data...
+                                X = self._build_layer(X, dict_for_vae_weights["_ow{0}".format(i)][j], dict_for_vae_weights["_ob{0}".format(i)][j], dropout_rate = self.dropout_level, output_layer = True)
+                                idx_origin_X = tf.argmax(origin_X, axis = 1)
+                                numerator_X = []
+                                for i in range(tf.shape(origin_X)):
+                                    numerator_X.append(tf.slice(origin_X, [i, idx_origin_X[i]], [1, 1])) 
+                                likelihood.append(tf.reduce_sum(tf.exp(tf.negative(numerator_X)) / tf.reduce_sum(tf.exp(tf.negative(origin_X)), axis = 1)))
+                                generated_X.append(X)
+                             
+                return generated_X, likelihood
+
+                        else:
+                            X = self._build_layer(X, dict_for_vae_weights["_ow{0}".format(i)][j], dict_for_vae_weights["_ob{0}".format(i)][j], dropout_rate = self.dropout_level, output_layers = True)
+                            
+                            
+            else:
+                for n in range(len(self.decoder_layers) -1):
+                    if (n == len(self.decoder_layers) - 2):
+                        X = self._build_layer(X, _ow[n], _ob[n],
+                                          dropout_rate = self.dropout_level, output_layer = True)
+                    else:
+                        X = self._build_layer(X, _w[n], _b[n],
+                                          dropout_rate = self.dropout_level)
+                generated_X = tf.split(X, num_levels, axis = 1)
                     
-            return generated_X
-       
+                return generated_X
+    
+            ################################### likelihood missing issue #####################################        
+                             
         def output_function(x):
             output_list = []
                 for i in num_levels:
@@ -236,9 +310,7 @@ class Midas(object):
             
             x_mu, x_log_sigma = encoder_to_z(encoded)
             generated_z, kld = sample_z(x_mu, x_log_sigma)
-            #### x sampling procedure is needed!!! #####
-            generated_x = decoder(z_to_decoder(generated_z))
-
+            generated_x, likelihood = decoder(z_to_decoder(generated_z))
             generated_x_split = tf.split(generated_x, num_levels, axis = 1)
             output = output_function(generated_x_split)
                                 
@@ -267,9 +339,7 @@ class Midas(object):
    
         #Build L2 loss and KL-Divergence                             
         cost_list = []
-        cost_categorical = []
-        cost_numeric = []
-              
+
         if self.weight_decay == 'default':
             lmbda = 1/self.imputation_target.shape[0]
         else:
@@ -282,7 +352,8 @@ class Midas(object):
                 [tf.nn.l2_loss(w) for w in _zw]+\
                 [tf.nn.l2_loss(w) for w in _ow]
                 ), lmbda)                          
-                                 
+
+            self.joint_loss = tf.reduce_mean(likelihood + kld + l2_penalty)
         # loss for mida model                        
         else:
             l2_penalty = tf.multiply(tf.reduce_mean(
@@ -297,27 +368,25 @@ class Midas(object):
                     # why use rmse? not mse?
                 else:
                     cost_list.append(tf.losses.softmax_cross_entropy(tf.reshape(tf.boolean_mask(x_split[i], na_split[i]), [-1, i]), tf.reshape(tf.boolean_mask(generated_x_split[i], na_split[i]), [-1, i])) *self.softmax_adj *na_adj)
-
-        # define joint loss                         
-        if self.vae:
-            self.joint_loss = tf.reduce_mean(tf.reduce_sum(cost_list) + kld + l2_penalty)
             
-        else:
             self.joint_loss = tf.reduce_mean(tf.reduce_sum(cost_list) + l2_penalty)
-
+            #version 2, original midas
+            #self.joint_loss = tf.reduce_mean(tf.reduce_sum(cost_list) + l2_penalty + kld)
+            
+                            
         self.train_step = tf.train.AdamOptimizer(self.learn_rate).minimize(self.joint_loss)
         self.init = tf.global_variables_initializer()
         self.saver = tf.train.Saver()
 
         return self
 
-  def train_model(self,
+    def train_model(self,
                   training_epochs= 100,
                   verbose= True,
                   verbosity_ival= 1,
                   excessive= False):
 
-                                 
+
         if self.seed is not None:
             np.seed(self.seed)
 
@@ -325,49 +394,49 @@ class Midas(object):
         na_loc = self.na_matrix.values
 
         with tf.Session(graph= self.graph) as sess:
-              sess.run(self.init)
-              if verbose:
-                  print("Model initialised")
-              for epoch in range(training_epochs):
-                  count = 0
-                  run_loss = 0
-                  for batch in self._batch_iter(feed_data, na_loc, self.train_batch):
-                      if np.sum(batch[1]) == 0:
-                          continue
-                      feedin = {self.X: batch[0], self.na_idx: batch[1]}
-                      if self.additional_data is not None:
-                          feedin[self.X_add] = batch[2]
-                      loss, _ = sess.run([self.joint_loss, self.train_step], feed_dict= feedin)
+            sess.run(self.init)
+            if verbose:
+                print("Model initialised")
+                for epoch in range(training_epochs):
+                    count = 0
+                    run_loss = 0
+                    for batch in self._batch_iter(feed_data, na_loc, self.train_batch):
+                        if np.sum(batch[1]) == 0:
+                            continue
+                        feedin = {self.X: batch[0], self.na_idx: batch[1]}
+                        if self.additional_data is not None:
+                            feedin[self.X_add] = batch[2]
+                        loss, _ = sess.run([self.joint_loss, self.train_step], feed_dict= feedin)
 
-                      if excessive:
-                          print("Current cost:", loss)
-                      count +=1
-                      if not np.isnan(loss):
-                          run_loss += loss
-                  if verbose:
-                      if epoch % verbosity_ival == 0:
-                          print('Epoch:', epoch, ", loss:", str(run_loss/count))
+                        if excessive:
+                            print("Current cost:", loss)
+                        count +=1
+                        if not np.isnan(loss):
+                            run_loss += loss
+                    if verbose:
+                        if epoch % verbosity_ival == 0:
+                            print('Epoch:', epoch, ", loss:", str(run_loss/count))
 
-              print("Training complete. Saving file...")
-              save_path = self.saver.save(sess, self.savepath)
-              print("Model saved in file: %s" % save_path)
+            print("Training complete. Saving file...")
+            save_path = self.saver.save(sess, self.savepath)
+            print("Model saved in file: %s" % save_path)
         return self
 
-  def batch_generate_samples(self,
+    def batch_generate_samples(self,
                              test_data,
                              m= 50,
                              b_size= 256,
                              verbose= True):
-        
+
         # This function is for testing model.
         # this function returns output_list of given data through this model !!
         # **data_afteration needed. maybe cross-validation with this result?
-        
+
         idx_null = test_data.notnull()
         test_data = test.data.fillna(0)
-        
+
         self.output_list = []
-        
+
         with tf.Session(graph= self.graph) as sess:
             self.saver.restore(sess, self.savepath)
             if verbose:
@@ -376,11 +445,11 @@ class Midas(object):
                 feed_data = test_data.values
                 minibatch_list = []
                 for batch in self._batch_iter_output(test_data, b_size):
-                      feedin = {self.X: batch}
-                      y_batch = pd.DataFrame(sess.run(output, feed_dict= feedin), columns= test_data.columns)
-                      minibatch_list.append(y_batch)
+                    feedin = {self.X: batch}
+                    y_batch = pd.DataFrame(sess.run(output, feed_dict= feedin), columns= test_data.columns)
+                    minibatch_list.append(y_batch)
                 y_out = pd.DataFrame(pd.concat(minibatch_list, ignore_index= True), columns= test_data.columns)
-                
+
                 # ignore non-missing column of test data sample, only insert values on missing column on test_data.
                 output_df = test_data.copy()
                 output_df[np.invert(idx_null)] = y_out[np.invert(idx_null)]
