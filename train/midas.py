@@ -241,7 +241,7 @@ class Midas(object):
             # decoder functions returns lists of generated X.
             # therefore, if the self.vae = True, sampling phases are needed and, this function include sampling process.
             # it self.vae = True, this function must return the likelihood values. 
-            if self.vae = True:
+            if self.vae == True:
                 generated_X = []
                 likelihood = []
                 for i in range(num_levels):
@@ -258,7 +258,6 @@ class Midas(object):
                                 X = x_mu + epsilon * tf.exp(x_log_sigma)
                                 generated_X.append(X)
 
-                return generated_X, likelihood
                             else:
                                  # categorical case, softmax ( -x[original_X's idx] )
                                  # categorical case doesn't need sampling(maybe. ) just take softmax. << 약간 어색한데..
@@ -271,10 +270,9 @@ class Midas(object):
                                 likelihood.append(tf.reduce_sum(tf.exp(tf.negative(numerator_X)) / tf.reduce_sum(tf.exp(tf.negative(origin_X)), axis = 1)))
                                 generated_X.append(X)
                              
-                return generated_X, likelihood
-
                         else:
                             X = self._build_layer(X, dict_for_vae_weights["_ow{0}".format(i)][j], dict_for_vae_weights["_ob{0}".format(i)][j], dropout_rate = self.dropout_level, output_layers = True)
+                return generated_X, likelihood
                             
                             
             else:
@@ -293,11 +291,11 @@ class Midas(object):
                              
         def output_function(x):
             output_list = []
-                for i in num_levels:
-                    if i == 1:
-                        output_list.append(x[i])
-                    else:
-                        output_list.append(tf.nn.softmax(x[i]))
+            for i in num_levels:
+                if i == 1:
+                    output_list.append(x[i])
+                else:
+                    output_list.append(tf.nn.softmax(x[i]))
             return tf.concat(output_list, axis= 1)                     
     
         
