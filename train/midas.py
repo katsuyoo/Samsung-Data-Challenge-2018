@@ -22,10 +22,12 @@ class Midas(object):
                dropout_level = 0.5,
                weight_decay = 'default',
                vae = True,
-               vae_alpha = 1.0,
+               vae_alpha = 1.0
                ):
         
-        if (self.decoder_layers == 'reversed'):
+        self.encoder_layers = encoder_layers
+        
+        if decoder_layers == 'reversed':
             self.decoder_layers = self.encoder_layers.copy()
             self.decoder_layers.reverse()
             
@@ -47,6 +49,7 @@ class Midas(object):
         self.prior_strength = vae_alpha
         self.cont_adj = cont_adj
         self.softmax_adj = softmax_adj
+        self.vae = vae
 
     def _batch_iter(self,
                   train_data,
@@ -111,8 +114,8 @@ class Midas(object):
                 additional_data = None,
                 verbose= True,
                 ):
-        
-       
+        print("num_levels :")
+        print(num_levels)
         self.na_matrix = imputation_target.notnull().astype(np.bool)
         self.imputation_target = imputation_target.fillna(0)
         if additional_data is not None:
@@ -128,7 +131,9 @@ class Midas(object):
         # add additional data size to self.encoder_layers attribute.
         # vice versa, for self.decoder_layers does.
         self.encoder_layers.insert(0, in_size + add_size)
-        self.decoder_layers.insert(-1, in_size)
+        self.decoder_layers.append(in_size)
+        #print(self.encoder_layers)
+        #print(self.decoder_layers)
 
         #Build graph
         tf.reset_default_graph()
@@ -157,8 +162,8 @@ class Midas(object):
                 # one DNN for one variables.
                 dict_for_vae_weights["_ow{0}".format(i)] = []
                 dict_for_vae_weights["_ob{0}".format(i)] = []
-                
-             
+
+
             #encoder variables
             for n in range(len(self.encoder_layers) -1):
                 self._build_variables(weights= _w, biases= _b,
@@ -182,7 +187,8 @@ class Midas(object):
                 self._build_variables(weights= _ow, biases= _ob,
                                                    num_in= self.decoder_layers[n],
                                                    num_out= self.decoder_layers[n+1])
-                
+
+
             #decoder variables for vae networks, one DNNs for one attribute.
             # for numerical variables, output neurons : mu, log_sigma
             # for categorical variables, output neurons : R-dimensional vectors, representing vector of unnormalized probabilities.
@@ -195,186 +201,231 @@ class Midas(object):
                         if num_levels[i] == 1:
                             # if integer variables, outputs neurons are mu, log_sigma.
                             self._build_variables(weights= dict_for_vae_weights["_ow{0}".format(i)], biases= dict_for_vae_weights["_ob{0}".format(i)],
-                                          num_in = self.decoder_layers_layers[j], num_out=2)
+                                          num_in = self.decoder_layers[j], num_out=2)
                             # erase following weights and biases, because we choosed sampling procedure, as reparametrization trick.
                             # self._build_variables(weights= dict_for_vae_weights["_ow{0}".format(i)], biases= dict_for_vae_weights["_ob{0}".format(i)],
                             #              num_in = 2, num_out=1)
-                            
+
                         else:
                             # if categorical variables, outputs neurons are R-dimensional vectors, representing vector of unnormalized probabilities.
                             self._build_variables(weights= dict_for_vae_weights["_ow{0}".format(i)], biases= dict_for_vae_weights["_ob{0}".format(i)],
-                                          num_in = self.decoder_layers_layers[j], num_out=num_levels[i])
+                                          num_in = self.decoder_layers[j], num_out=num_levels[i])
                             # self._build_variables(weights= dict_for_vae_weights["_ow{0}".format(i)], biases= dict_for_vae_weights["_ob{0}".format(i)],
                             #             num_in = num_levels[i], num_out=num_levels[i])
                     else:
                         self._build_variables(weights= dict_for_vae_weights["_ow{0}".format(i)], biases= dict_for_vae_weights["_ob{0}".format(i)],
-                                          num_in = self.decoder_layers_layers[j], num_out=self.decoder_layers[j+1])
+                                          num_in = self.decoder_layers[j], num_out=self.decoder_layers[j+1])
 
-        #Build the neural network
-    
-        def encoder(X):
-            for n in range(len(self.encoder_layers) -1):
-                if (n == 0):
-                    X = self._build_layer(X, _w[n], _b[n],
-                                      dropout_rate = self.input_drop)
-                else:
-                    X = self._build_layer(X, _w[n], _b[n],
-                                      dropout_rate = self.dropout_level)
-            return X
-        
-        def encoder_to_z(X):
-            X = self._build_layer(X, _zw[0], _zb[0], dropout_rate = self.dropout_level, output_layer= True)
-            x_mu, x_log_sigma = tf.split(X, [self.latent_space_size]*2, axis=1)
-            return x_mu, x_log_sigma
+            #Build the neural network
 
-        def sample_z(x_mu, x_log_sigma):
-            epsilon = tf.random_normal(tf.shape(x_mu))
-            z = x_mu + epsilon * tf.exp(X_log_sigma)
-            kld = tf.maximum(tf.reduce_mean(1 + 2*x_log_sigma*x_mu**2 - tf.exp(2-x_log_sigma), axis=1)*self.prior_strength * - 0.5, 0.01), 
-            return z, kld
-
-        def z_to_decoder(z):
-            X = self.build_layers(z, _zw[1], _zb[1], dropout_rate = self.dropout_level)
-            return X
-
-        def decoder(X, origin_X):
-            # decoder functions returns lists of generated X.
-            # therefore, if the self.vae = True, sampling phases are needed and, this function include sampling process.
-            # it self.vae = True, this function must return the likelihood values. 
-            if self.vae == True:
-                generated_X = []
-                likelihood = []
-                for i in range(num_levels):
-                    for j in range(len(self.decoder_layers) -1):
-                        if (j == len(self.decoder_layers) - 2):
-                            if num_levels[i] == 1:
-                                # numeric case, gaussian likelihood
-                                X = self._build_layer(X, dict_for_vae_weights["_ow{0}".format(i)][j], dict_for_vae_weights["_ob{0}".format(i)][j], dropout_rate = self.dropout_level, output_layer = True)
-                                x_mu, x_log_sigma = tf.split(X, [1, 1], axis = 1)
-                                # tf.substract supports broadcast
-                                likelihood.append(tf.reduce_sum(1 / tf.sqrt(2 * np.pi * tf.exp(x_log_sigma)) * tf.exp( - tf.substract(origin_X[i] - x_mu))**2 / (2 * (tf.exp(x_log_sigma)**2) ) ) )
-                                # loss update is done through likelihood, output is made of just connection of neurons.
-                                epsilon = tf.random_normal(tf.shape(x_mu))
-                                X = x_mu + epsilon * tf.exp(x_log_sigma)
-                                generated_X.append(X)
-
-                            else:
-                                 # categorical case, softmax ( -x[original_X's idx] )
-                                 # categorical case doesn't need sampling(maybe. ) just take softmax. << 약간 어색한데..
-                                 # in paper, there is no notification about sampling of categorical data...
-                                X = self._build_layer(X, dict_for_vae_weights["_ow{0}".format(i)][j], dict_for_vae_weights["_ob{0}".format(i)][j], dropout_rate = self.dropout_level, output_layer = True)
-                                idx_origin_X = tf.argmax(origin_X, axis = 1)
-                                numerator_X = []
-                                for i in range(tf.shape(origin_X)):
-                                    numerator_X.append(tf.slice(origin_X, [i, idx_origin_X[i]], [1, 1])) 
-                                likelihood.append(tf.reduce_sum(tf.exp(tf.negative(numerator_X)) / tf.reduce_sum(tf.exp(tf.negative(origin_X)), axis = 1)))
-                                generated_X.append(X)
-                             
-                        else:
-                            X = self._build_layer(X, dict_for_vae_weights["_ow{0}".format(i)][j], dict_for_vae_weights["_ob{0}".format(i)][j], dropout_rate = self.dropout_level, output_layers = True)
-                return generated_X, likelihood
-                            
-                            
-            else:
-                for n in range(len(self.decoder_layers) -1):
-                    if (n == len(self.decoder_layers) - 2):
-                        X = self._build_layer(X, _ow[n], _ob[n],
-                                          dropout_rate = self.dropout_level, output_layer = True)
+            def encoder(X):
+                for n in range(len(self.encoder_layers) -1):
+                    if (n == 0):
+                        X = self._build_layer(X, _w[n], _b[n],
+                                          dropout_rate = self.input_drop)
                     else:
                         X = self._build_layer(X, _w[n], _b[n],
                                           dropout_rate = self.dropout_level)
-                generated_X = tf.split(X, num_levels, axis = 1)
+                return X
+
+            def encoder_to_z(X):
+                X = self._build_layer(X, _zw[0], _zb[0], dropout_rate = self.dropout_level, output_layer= True)
+                x_mu, x_log_sigma = tf.split(X, [self.latent_space_size]*2, axis= 1)
+                return x_mu, x_log_sigma
+
+            def sample_z(x_mu, x_log_sigma):
+                epsilon = tf.random_normal(tf.shape(x_mu))
+                z = x_mu + epsilon * tf.exp(x_log_sigma)
+                kld = tf.maximum(tf.reduce_mean(1 + 2*x_log_sigma*x_mu**2 - tf.exp(2-x_log_sigma), axis=1)*self.prior_strength * - 0.5, 0.01) 
+                return z, kld
+
+            def z_to_decoder(z):
+                X = self._build_layer(z, _zw[1], _zb[1], dropout_rate = self.dropout_level)
+                return X
+
+            def decoder(X, origin_X = None):
+                # decoder functions returns lists of generated X.
+                # therefore, if the self.vae = True, sampling phases are needed and, this function include sampling process.
+                # it self.vae = True, this function must return the likelihood values. 
+                if self.vae == True:
+                    generated_X = []
+                    likelihood = []
+                    print(X)
+                    print(origin_X)
+                    for i in range(len(num_levels)):
+                        temp_X = []
+                        for j in range(len(self.decoder_layers) -1):
+                            if (j == len(self.decoder_layers) - 2):
+                                if num_levels[i] == 1:
+                                    # numeric case, gaussian likelihood
+                                    temp_X.append(self._build_layer(temp_X[-1], dict_for_vae_weights["_ow{0}".format(i)][j], dict_for_vae_weights["_ob{0}".format(i)][j], dropout_rate = self.dropout_level, output_layer = True))
+                                    x_mu, x_log_sigma = tf.split(temp_X[-1], [1, 1], axis = 1)
+                                    # tf.subtract supports broadcast
+                                    likelihood.append(tf.reduce_sum(1 / tf.sqrt(2 * np.pi * tf.exp(x_log_sigma)) * tf.exp( - tf.subtract(origin_X[i], x_mu))**2 / (2 * (tf.exp(x_log_sigma)**2) ) ) )
+                                    # loss update is done through likelihood, output is made of just connection of neurons.
+                                    epsilon = tf.random_normal(tf.shape(x_mu))
+                                    sampled_x = x_mu + epsilon * tf.exp(x_log_sigma)
+                                    generated_X.append(sampled_x)
+                                    break        
+                                else:
+                                     # categorical case, softmax ( -x[original_X's idx] )
+                                     # categorical case doesn't need sampling(maybe. ) just take softmax. << 약간 어색한데..
+                                     # in paper, there is no notification about sampling of categorical data...
+                                    temp_X.append(self._build_layer(temp_X[-1], dict_for_vae_weights["_ow{0}".format(i)][j], dict_for_vae_weights["_ob{0}".format(i)][j], dropout_rate = self.dropout_level, output_layer = True))
+                                    idx_origin_X = tf.argmax(origin_X[i], axis = 1)
+                                    print("idx")
+                                    print(idx_origin_X)
+                                    numerator_X = []
+                                     
+                                    
+                                    for k in range(num_levels[i]):
+                                        print("temp_X")
+                                        print(temp_X[-1])
+                                        print(temp_X[-1][k])
+                                        numerator_X.append(tf.slice(temp_X[-1][k], [k, idx_origin_X[k]], [1, 1]))
+                        
+                                        
+                                    likelihood.append(tf.reduce_sum(tf.exp(tf.negative(numerator_X)) / tf.reduce_sum(tf.exp(tf.negative(temp_X[-1])), axis = 1)))
+                                    generated_X.append(temp_X[-1])
+                                    break
+
+                            else:
+                                if temp_X == []:
+                                    temp_X.append(self._build_layer(X, dict_for_vae_weights["_ow{0}".format(i)][j], dict_for_vae_weights["_ob{0}".format(i)][j], dropout_rate = self.dropout_level, output_layer = True))
+                                else:
+                                    temp_X.append(self._build_layer(temp_X[-1], dict_for_vae_weights["_ow{0}".format(i)][j], dict_for_vae_weights["_ob{0}".format(i)][j], dropout_rate = self.dropout_level, output_layer = True))
+
+                    print(likelihood)
+                   
+                    return generated_X, tf.reduce_prod(likelihood)
+
+
+                else:
+                    for n in range(len(self.decoder_layers) -1):
+                        if (n == len(self.decoder_layers) - 2):
+                            X = self._build_layer(X, _ow[n], _ob[n],
+                                              dropout_rate = self.dropout_level, output_layer = True)
+                        else:
+                            X = self._build_layer(X, _ow[n], _ob[n],
+                                              dropout_rate = self.dropout_level)
+                    generated_X = tf.split(X, num_levels, axis = 1)
+
+                    return generated_X
+
+                ################################### likelihood missing issue #####################################        
+
+            def output_function(x):
+                output_list = []
+                j = 0
+                for i in num_levels:
+                    if i == 1:
+                        output_list.append(x[j])
+                        j += 1
+                    else:
+                        output_list.append(tf.nn.softmax(x[j]))
+                        j += 1
+                return tf.concat(output_list, axis= 1)                     
+
+
+            # if self.vae = True, construct vae model
+            if (self.vae == True):                                 
+                if self.additional_data != None:
+                    x_temp = tf.concat([self.X, self.X_add], axis = 1)
+
+                else:
+                    x_temp = self.X
+                encoded_x = encoder(x_temp)
+                x_mu, x_log_sigma = encoder_to_z(encoded_x)
+                generated_z, kld = sample_z(x_mu, x_log_sigma)
+                generated_x, likelihood = decoder(z_to_decoder(generated_z), x_temp)
+                output = output_function(generated_x)
+
+            # if self.vae = False, construct mida model                         
+            else:
+                if self.additional_data != None:
+                    encoded_x = encoder(tf.concat([self.X, self.X_add], axis= 1))
+                else:
+                    encoded_x = encoder(self.X)
+
+                generated_x = decoder(encoded_x)
+                output = output_function(generated_x)
+
+            if self.additional_data != None:
+                x = tf.concat([self.X, self.X_add], axis = 1)
+                # remind ; additional_data consists of [data , num_levels of add data ]
+                concated_num_levels = tf.concat([num_levels, additional_data[1]], axis = 1)
+
+            else:
+                x = self.X
+                concated_num_levels = num_levels
+
+            na_split = tf.split(self.na_idx, concated_num_levels, axis = 1)         
+            x_split = tf.split(x, concated_num_levels, axis = 1)
+
+            #Build L2 loss and KL-Divergence                             
+            cost_list_mse = []
+            cost_list_ce = []
+            # vae
+            cost_list = []
+
+            if self.weight_decay == 'default':
+                lmbda = 1/self.imputation_target.shape[0]
+            else:
+                lmbda = self.weight_decay
+
+            # loss for vae model                         
+            if self.vae:
+                l2_penalty = tf.multiply(tf.reduce_mean(
+                    [tf.nn.l2_loss(w) for w in _w]+\
+                    [tf.nn.l2_loss(w) for w in _zw]+\
+                    [tf.nn.l2_loss(w) for w in _ow]
+                    ), lmbda)                          
+              
+                print("l2_penalty")
+                print(l2_penalty)
+                print("kl divergence")
+                print(kld)
+                print("likelihood")
+                print(likelihood)
+                
+                # self.joint_loss = likelihood + l2_penalty + kld
+                self.likelihood = likelihood
+                self.joint_loss = likelihood
+                #self.joint_loss = likelihood
+                #self.joint_loss = tf.reduce_mean(likelihood + kld + l2_penalty)
+            # loss for mida model                        
+            else:
+                l2_penalty = tf.multiply(tf.reduce_mean(
+                    [tf.nn.l2_loss(w) for w in _w]+\
+                    [tf.nn.l2_loss(w) for w in _ow]
+                    ), lmbda)
                     
-                return generated_X
-    
-            ################################### likelihood missing issue #####################################        
-                             
-        def output_function(x):
-            output_list = []
-            for i in num_levels:
-                if i == 1:
-                    output_list.append(x[i])
-                else:
-                    output_list.append(tf.nn.softmax(x[i]))
-            return tf.concat(output_list, axis= 1)                     
-    
-        
-        # if self.vae = True, construct vae model
-        if (self.vae == True):                                 
-            if self.additional_data != None:
-                encoded_x = encoder(tf.concat([self.X, self.X_add], axis= 1))
-            else:
-                encoded_x = encoder(self.X)
-            
-            x_mu, x_log_sigma = encoder_to_z(encoded)
-            generated_z, kld = sample_z(x_mu, x_log_sigma)
-            generated_x, likelihood = decoder(z_to_decoder(generated_z))
-            generated_x_split = tf.split(generated_x, num_levels, axis = 1)
-            output = output_function(generated_x_split)
-                                
-        # if self.vae = False, construct mida model                         
-        else:
-            if self.additional_data != None:
-                encoded_x = encoder(tf.concat([self.X, self.X_add], axis= 1))
-            else:
-                encoded_x = encoder(self.X)
-            
-            generated_x = decoder(encoded_x)
-            genearted_x_split = tf.split(generated_x, num_levels, axis = 1)
-            output = output_function(generated_x_split)
-                                 
-        if self.additional_data != None:
-            x = tf.concat([self.X, self.X_add], axis = 1)
-            # remind ; additional_data consists of [data , num_levels of add data ]
-            concated_num_levels = tf.concat([num_levels, additional_data[1]], axis = 1)
-     
-        else:
-            x = self.X
-            concated_num_levels = num_levels
-        
-        na_split = tf.split(self.na_idx, concated_num_levels, axis = 1)         
-        x_split = tf.split(x, concated_num_levels, axis = 1)
-   
-        #Build L2 loss and KL-Divergence                             
-        cost_list = []
+                j = 0
+                for i in concated_num_levels:
+                    na_adj = tf.cast(tf.count_nonzero(na_split[j]),tf.float32) / tf.cast(tf.size(na_split[j]),tf.float32)
+                    print(na_adj)
+                    if i == 1:
+                        cost_list_mse.append(tf.sqrt(tf.losses.mean_squared_error(tf.boolean_mask(x_split[j], na_split[j]), tf.boolean_mask(generated_x[j], na_split[j]))) * self.cont_adj * na_adj)
+                        j += 1
+                        
+                    else:
+                        print(x_split[j])
+                        print( tf.boolean_mask(x_split[j], na_split[j] ) )
+                                                             
+                        cost_list_ce.append(tf.losses.softmax_cross_entropy( tf.reshape(tf.boolean_mask(x_split[j], na_split[j]), [-1, i]), tf.reshape( tf.boolean_mask(generated_x[j], na_split[j] ), [-1, i]) )  *self.softmax_adj *na_adj ) 
+                        j += 1
 
-        if self.weight_decay == 'default':
-            lmbda = 1/self.imputation_target.shape[0]
-        else:
-            lmbda = self.weight_decay
-       
-        # loss for vae model                         
-        if self.vae:
-            l2_penalty = tf.multiply(tf.reduce_mean(
-                [tf.nn.l2_loss(w) for w in _w]+\
-                [tf.nn.l2_loss(w) for w in _zw]+\
-                [tf.nn.l2_loss(w) for w in _ow]
-                ), lmbda)                          
+                self.ce = tf.reduce_sum(cost_list_ce)
+                self.mse = tf.reduce_sum(cost_list_mse)
+                self.l2p = l2_penalty
+                self.joint_loss = self.ce + self.mse + self.l2p
+                #version 2, original midas
+                #self.joint_loss = tf.reduce_mean(tf.reduce_sum(cost_list) + l2_penalty + kld)
 
-            self.joint_loss = tf.reduce_mean(likelihood + kld + l2_penalty)
-        # loss for mida model                        
-        else:
-            l2_penalty = tf.multiply(tf.reduce_mean(
-                [tf.nn.l2_loss(w) for w in _w]+\
-                [tf.nn.l2_loss(w) for w in _ow]
-                ), lmbda)
-            
-            for i in concated_num_levels:
-                na_adj = tf.cast(tf.count_nonzero(na_split[n]),tf.float32) / tf.cast(tf.size(na_split[n]),tf.float32)
-                if i == 1:
-                    cost_list.append(tf.sqrt(tf.losses.mean_squared_error(tf.boolean_mask(x_split[i], na_split[i]), tf.boolean_mask(generated_x_split[i], na_split[i]))) * self.cont_adj * na_adj)
-                    # why use rmse? not mse?
-                else:
-                    cost_list.append(tf.losses.softmax_cross_entropy(tf.reshape(tf.boolean_mask(x_split[i], na_split[i]), [-1, i]), tf.reshape(tf.boolean_mask(generated_x_split[i], na_split[i]), [-1, i])) *self.softmax_adj *na_adj)
-            
-            self.joint_loss = tf.reduce_mean(tf.reduce_sum(cost_list) + l2_penalty)
-            #version 2, original midas
-            #self.joint_loss = tf.reduce_mean(tf.reduce_sum(cost_list) + l2_penalty + kld)
-            
-                            
-        self.train_step = tf.train.AdamOptimizer(self.learn_rate).minimize(self.joint_loss)
-        self.init = tf.global_variables_initializer()
-        self.saver = tf.train.Saver()
+
+            self.train_step = tf.train.AdamOptimizer(self.learn_rate).minimize(self.joint_loss)
+            self.init = tf.global_variables_initializer()
+            self.saver = tf.train.Saver()
 
         return self
 
@@ -395,30 +446,43 @@ class Midas(object):
             sess.run(self.init)
             if verbose:
                 print("Model initialised")
-                for epoch in range(training_epochs):
-                    count = 0
-                    run_loss = 0
-                    for batch in self._batch_iter(feed_data, na_loc, self.train_batch):
-                        if np.sum(batch[1]) == 0:
-                            continue
-                        feedin = {self.X: batch[0], self.na_idx: batch[1]}
-                        if self.additional_data is not None:
-                            feedin[self.X_add] = batch[2]
-                        loss, _ = sess.run([self.joint_loss, self.train_step], feed_dict= feedin)
+            for epoch in range(training_epochs):
+                count = 0
+                run_loss = 0
+                run_ce = 0
+                run_mse = 0
+                run_l2p = 0
+                for batch in self._batch_iter(feed_data, na_loc, self.train_batch):
+                    if np.sum(batch[1]) == 0:
+                        continue
+                    feedin = {self.X: batch[0], self.na_idx: batch[1]}
+                    
+                    #likelihood = sess.run([self.likelihood], feed_dict = feedin)
+                    #print(likelihood)
+                    
+                    if self.additional_data is not None:
+                        feedin[self.X_add] = batch[2]
+                    loss,  _ = sess.run( [self.joint_loss, self.train_step] , feed_dict= feedin)
+                    mse = sess.run(self.mse, feed_dict = feedin)
+                    ce = sess.run(self.ce, feed_dict = feedin)
+                    l2p = sess.run(self.l2p, feed_dict = feedin)
 
-                        if excessive:
-                            print("Current cost:", loss)
-                        count +=1
-                        if not np.isnan(loss):
-                            run_loss += loss
-                    if verbose:
-                        if epoch % verbosity_ival == 0:
-                            print('Epoch:', epoch, ", loss:", str(run_loss/count))
-
-            print("Training complete. Saving file...")
-            save_path = self.saver.save(sess, self.savepath)
-            print("Model saved in file: %s" % save_path)
-        return self
+                    if excessive:
+                        print("Current cost:", loss)
+                    count +=1
+                    if not np.isnan(loss):
+                        run_loss += loss
+                        run_ce += ce
+                        run_mse += mse
+                        run_l2p += l2p
+                if verbose:
+                    if epoch % verbosity_ival == 0:
+                        #print('Epoch:', epoch, ", loss:", str(run_loss/count))
+                        print('Epoch:', epoch, ", loss:", str(run_loss/count), ", mse:", str(run_mse/count), ", ce:", str(run_ce/count), ", l2p:", str(run_l2p/count))
+                print("Training complete. Saving file...")
+                save_path = self.saver.save(sess, self.savepath)
+                print("Model saved in file: %s" % save_path)
+            return self
 
     def batch_generate_samples(self,
                              test_data,
