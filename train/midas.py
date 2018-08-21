@@ -236,7 +236,7 @@ class Midas(object):
             def sample_z(x_mu, x_log_sigma):
                 epsilon = tf.random_normal(tf.shape(x_mu))
                 z = x_mu + epsilon * tf.exp(x_log_sigma)
-                kld = tf.maximum(tf.reduce_mean(1 + 2*x_log_sigma*x_mu**2 - tf.exp(2-x_log_sigma), axis=1)*self.prior_strength * - 0.5, 0.01) 
+                kld = 1/2 * (tf.reduce_sum(1 + 2*x_log_sigma - x_mu**2 - tf.exp(2*x_log_sigma), axis=1)*self.prior_strength * - 0.5 )
                 return z, kld
 
             def z_to_decoder(z):
@@ -272,6 +272,8 @@ class Midas(object):
                                      # categorical case doesn't need sampling(maybe. ) just take softmax. << 약간 어색한데..
                                      # in paper, there is no notification about sampling of categorical data...
                                     temp_X.append(self._build_layer(temp_X[-1], dict_for_vae_weights["_ow{0}".format(i)][j], dict_for_vae_weights["_ob{0}".format(i)][j], dropout_rate = self.dropout_level, output_layer = True))
+                                    print("origin_X")
+                                    print(origin_X)
                                     idx_origin_X = tf.argmax(origin_X[i], axis = 1)
                                     print("idx")
                                     print(idx_origin_X)
