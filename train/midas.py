@@ -28,223 +28,136 @@ class Midas(object):
         self.learn_rate = learn_rate
         self.input_drop = input_drop
         self.savepath = savepath
-        self.additional_data = None
         self.train_batch = train_batch
         self.dropout_level = dropout_level
         
-    def _batch_iter(self,
-                  train_data,
-                  na_mask,
-                  b_size = 16):
-        # functions for batch, used in train phase
-        
-        indices = np.arange(train_data.shape[0])
-        np.random.shuffle(indices)
 
-        for start_idx in range(0, train_data.shape[0] - b_size + 1, b_size):
-            excerpt = indices[start_idx:start_idx + b_size]
-        
-            if self.additional_data is None:
-                yield train_data[excerpt], na_mask[excerpt]
-            else:
-                yield train_data[excerpt], na_mask[excerpt], self.additional_data.values[excerpt]
-
-    def _build_layer(self,
-                   X,
-                   w,
-                   b,
-                   dropout_rate = 0.5,
-                   output_layer= False):
-        
-        X_dropout = tf.nn.dropout(X, dropout_rate)
-        X = tf.matmul(X_dropout, w) + b
-        
-        if output_layer != True:
-            return tf.nn.elu(X)
-        else:
-            return X
-
-    def _build_variables(self,
-                       w,
-                       b,
-                       num_in,
-                       num_out):
-    
-        temp_w = tf.Variable(tf.truncated_normal([num_in, num_out], mean = 0, stddev = scale / np.sqrt(num_in + num_out)))
-        temp_b = tf.Variable(tf.zeros([num_out]))
-        w.append(temp_w)
-        b.append(temp_b) 
-
-    def modeling(self,
+def modeling(self,
                 origin_data,
-                num_levels,
-                additional_data = None,
-                verbose= True,
+                num_levels
                 ):
         
         self.na_matrix = origin_data.notnull().astype(np.bool)
         self.origin_data = origin_data.fillna(0)
-        if additional_data is not None:
-            self.additional_data = additional_data.fillna(0)
         
-        in_size = self.origin_data.shape[1]
-
-        if additional_data != None:
-              add_size = self.additional_data.shape[1]
-        else:
-              add_size = 0
+        size_input_attribute = self.origin_data.shape[1]
+        
         
         # add additional data size to self.encoder_layers attribute.
         # vice versa, for self.decoder_layers does.
-        self.encoder_layers.insert(0, in_size + add_size)
-        self.decoder_layers.append(in_size)
-      
+        ####################################################################################################check point for add
+        self.encoder_layers.insert(0, size_input_attribute)
+        self.decoder_layers.append(size_input_attribute)
+    
         # Build graph
         tf.reset_default_graph()
         self.graph = tf.Graph()
         with self.graph.as_default():
             #Placeholders
-            self.X = tf.placeholder(tf.float32, [None, in_size])
-            self.na_idx = tf.placeholder(tf.bool, [None, in_size])
-            #self.latent_inputs = tf.placeholder(tf.float32, [None, self.latent_space_size])
-
-            if additional_data != None:
-                self.X_add = tf.placeholder(tf.float32, [None, add_size])
+            self.X = tf.placeholder(tf.float32, [None, size_input_attribute])
+            self.na = tf.placeholder(tf.bool, [None, size_input_attribute])
 
             #Instantiate and initialise variables
-            _w = []
-            _b = []
-            _ow = []
-            _ob = []
+            w = []
+            b = []
+            ow = []
+            ob = []
             
             #encoder variables
             for n in range(len(self.encoder_layers) -1):
-                self._build_variables(weights= _w, biases= _b,
-                                               num_in= self.encoder_layers[n],
-                                               num_out= self.encoder_layers[n+1]
-                                               )
-
+                w.append(tf.Variable(tf.truncated_normal([self.encoder_layers[n], self.encoder_layers[n+1]], mean = 0, stddev = 1.0 / np.sqrt(in_size + add_size))))
+                b.append(tf.Variable(tf.zeros([self.encoder_layers[n+1]])))
             
             #decoder variables
             for n in range(len(self.decoder_layers) -1):
-                self._build_variables(weights= _ow, biases= _ob,
-                                                   num_in= self.decoder_layers[n],
-                                                   num_out= self.decoder_layers[n+1])
-
-
+                ow.append(tf.Variable(tf.truncated_normal([self.decoder_layers[n], self.decoder_layers[n+1]], mean = 0, stddev = 1.0 / np.sqrt(self.decoder_layers[0]))))
+                ob.append(tf.Variable(tf.zeros([self.decoder_layers[n+1]])))
+ 
             #Build the neural network
             def encoder(X):
-                for n in range(len(self.encoder_layers) -1):
-                    if (n == 0):
-                        X = self._build_layer(X, _w[n], _b[n],
-                                          dropout_rate = self.input_drop)
+                for i in range(len(self.encoder_layers) -1):
+                    if (i == 0):
+                        X_dropout = tf.nn.dropout(X, self.input_dropout)
+                        X = tf.matmul(X_dropout, w[i]) + b[i]
+                        X = tf.nn.elu(X)
                     else:
-                        X = self._build_layer(X, _w[n], _b[n],
-                                          dropout_rate = self.dropout_level)
+                        X_dropout = self.build_layer(X, w[i], b[i], dropout_rate = self.hidden_dropout)
+                        X = tf.matmul(X_dropout, w[i]) + b[i]
+                        X = tf.nn.elu(X)
                 return X
-
             
-            def decoder(X, origin_X = None):
-                # decoder functions returns lists of generated X.
-                # therefore, if the self.vae = True, sampling phases are needed and, this function include sampling process.
-                # it self.vae = True, this function must return the likelihood values. 
-                
-                for n in range(len(self.decoder_layers) -1):
-                    if (n == len(self.decoder_layers) - 2):
-                        X = self._build_layer(X, _ow[n], _ob[n],
-                                              dropout_rate = self.dropout_level, output_layer = True)
+            def decoder(X):
+                for i in range(len(self.decoder_layers) -1):
+                    if (i == len(self.decoder_layers) - 2):
+                        X_dropout = tf.nn.dropout(X, self.hidden_dropout)
+                        X = tf.matmul(X_dropout, ow[i]) + ob[i]
                     else:
-                        X = self._build_layer(X, _ow[n], _ob[n],
-                                              dropout_rate = self.dropout_level)
-                generated_X = tf.split(X, num_levels, axis = 1)
-
-                return generated_X
+                        X_dropout = tf.nn.dropout(X, self.hidden_dropout)
+                        X = tf.matmul(X_dropout, ow[i]) + ob[i]
+                        X = tf.nn.elu(X)
+                
+                X = tf.split(X, num_levels, axis = 1)
+                return X
                 
                 ################################### likelihood missing issue #####################################        
 
-            def output_function(x):
-                output_list = []
+            def output(x):
+                output = []
                 j = 0
                 for i in num_levels:
                     if i == 1:
-                        output_list.append(x[j])
+                        output.append(x[j])
                         j += 1
                     else:
-                        output_list.append(tf.nn.softmax(x[j]))
+                        output.append(tf.nn.softmax(x[j]))
                         j += 1
-                return tf.concat(output_list, axis= 1)                     
+                return tf.concat(output, axis= 1)                     
 
+            # variables for data generating (forward propagation)
+            manifold = encoder(self.X)
 
-            if self.additional_data != None:
-                encoded_x = encoder(tf.concat([self.X, self.X_add], axis= 1))
-            else:
-                encoded_x = encoder(self.X)
+            generated_x = decoder(manifold)
+            self.output = output(generated_x)
 
-            generated_x = decoder(encoded_x)
-            self.output = output_function(generated_x)
+            # variables for loss (backward propagation)
+            x = self.X
+            concated_num_levels = num_levels
 
-            if self.additional_data != None:
-                x = tf.concat([self.X, self.X_add], axis = 1)
-                # remind ; additional_data consists of [data , num_levels of add data ]
-                concated_num_levels = tf.concat([num_levels, additional_data[1]], axis = 1)
-
-            else:
-                x = self.X
-                concated_num_levels = num_levels
-
-            na_split = tf.split(self.na_idx, concated_num_levels, axis = 1)         
-            x_split = tf.split(x, concated_num_levels, axis = 1)
-
-            #Build L2 loss and KL-Divergence                             
+            x_split = tf.split(x, concated_num_levels, axis = 1)    
+            na_split = tf.split(self.na, concated_num_levels, axis = 1)         
+            
+            #L2 loss / KL-Divergence                             
             cost_list_mse = []
             cost_list_ce = []
-            # vae
-            cost_list = []
-
-            if self.weight_decay == 'default':
-                lmbda = 1/self.origin_data.shape[0]
-            else:
-                lmbda = self.weight_decay
-                        
                                     
-            l2_penalty = tf.multiply(tf.reduce_mean(
-                    [tf.nn.l2_loss(w) for w in _w]+\
-                    [tf.nn.l2_loss(w) for w in _ow]
-                    ), lmbda)
-                    
+            l2_penalty=tf.multiply(tf.reduce_mean([tf.nn.l2_loss(w) for w in w]+[tf.nn.l2_loss(w) for w in ow]), 0.05)
+                   
             j = 0
             for i in concated_num_levels:
-                na_adj = tf.cast(tf.count_nonzero(na_split[j]),tf.float32) / tf.cast(tf.size(na_split[j]),tf.float32)
-                #print(na_adj)
                 if i == 1:
-                    cost_list_mse.append(tf.sqrt(tf.losses.mean_squared_error(
-                        tf.boolean_mask(x_split[j], na_split[j]), tf.boolean_mask(generated_x[j], na_split[j]))) * na_adj)
+                    # case for numeric
+                    cost_list_mse.append(tf.sqrt(tf.losses.mean_squared_error(tf.boolean_mask(x_split[j], na_split[j]), tf.boolean_mask(generated_x[j], na_split[j]))))
                     j += 1
                         
                 else:
-                    #print(x_split[j])
-                    #print( tf.boolean_mask(x_split[j], na_split[j] ) )
-                                                             
-                    cost_list_ce.append(tf.losses.softmax_cross_entropy(
-                        tf.reshape(tf.boolean_mask(x_split[j], na_split[j]), [-1, i]), 
-                        tf.reshape( tf.boolean_mask(generated_x[j], na_split[j]), [-1, i]) ) *na_adj ) 
+                    # case for categorical
+                    cost_list_ce.append(tf.losses.softmax_cross_entropy(tf.reshape(tf.boolean_mask(x_split[j], na_split[j]), [-1, i]), tf.reshape( tf.boolean_mask(generated_x[j], na_split[j]), [-1, i]) )) 
                     j += 1
 
             self.ce = tf.reduce_sum(cost_list_ce)
             self.mse = tf.reduce_sum(cost_list_mse)
             self.l2p = l2_penalty
             self.joint_loss = self.ce + self.mse + self.l2p
-                
-
+               
             self.train_step = tf.train.AdamOptimizer(self.learn_rate).minimize(self.joint_loss)
             self.init = tf.global_variables_initializer()
             self.saver = tf.train.Saver()
 
         return self
-
+    
     def training(self, epochs=100):
 
-        feed_data = self.origin_data.values
+        self.origin_data.reset_index(drop=True,inplace=True)
         na_loc = self.na_matrix.values
 
         with tf.Session(graph= self.graph) as sess:
@@ -256,13 +169,15 @@ class Midas(object):
                 run_mse = 0
                 run_l2p = 0
                 
-                for batch in self._batch_iter(feed_data, na_loc, self.train_batch):
-                    if np.sum(batch[1]) == 0:
-                        continue
-                    feedin = {self.X: batch[0], self.na_idx: batch[1]}
+                batch_pick = np.random.permutation(np.arange(self.origin_data.shape[0]))
+                for batch in range(0,self.origin_data.shape[0],self.train_batch):
+                    feed_list = []
+                    #if np.sum(batch[1]) == 0:
+                    #    continue
+                    feed_list.append(self.origin_data.loc[batch_pick[batch:batch+16]])
+                    feed_list.append(na_loc[batch_pick[batch:batch+16]])
+                    feedin = {self.X: feed_list[0], self.na: feed_list[1]}
                     
-                    if self.additional_data is not None:
-                        feedin[self.X_add] = batch[2]
                     loss,  _ = sess.run( [self.joint_loss, self.train_step] , feed_dict= feedin)
                     mse = sess.run(self.mse, feed_dict = feedin)
                     ce = sess.run(self.ce, feed_dict = feedin)

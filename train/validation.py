@@ -13,9 +13,9 @@ data_0, col_list = proc.preProcessing(data_path='train_utf.csv', isTrain = True)
 origin_data = proc.train_ref
 
 rand_pick = np.random.permutation(np.arange(data_0.shape[0]))
-missing_index = proc.missing_index.drop(rand_pick[:16])
-data_0_test = data_0.loc[rand_pick[:16]]
-test_origin = origin_data.loc[rand_pick[:16]]
+missing_index = proc.missing_index.drop(rand_pick[:320])
+data_0_test = data_0.loc[rand_pick[:320]]
+test_origin = origin_data.loc[rand_pick[:320]]
 data_0.drop(rand_pick[:16],inplace=True)
 
 imputer = Midas(vae = False)

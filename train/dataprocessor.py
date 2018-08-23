@@ -92,7 +92,7 @@ class dataProcessor:
                      isTrain):
         
         if isTrain:
-            self.train_data = pd.read_csv(data_path).loc[:31]
+            self.train_data = pd.read_csv(data_path).loc[:3199]
             self.train_ref = self.train_data.copy()
             self.missing_generation()
         else:
